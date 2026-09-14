@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel de Rendimiento Académico</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f5f7fa;color:#243447}
+.encabezado{background:#fff;border-bottom:1px solid #e1e5ea;padding:28px 20px 22px;text-align:center}
+.encabezado h1{margin:0 0 8px;font-size:28px;font-weight:600}
+.encabezado p{margin:0;color:#687585;font-size:15px}
+.contenido{width:95%;max-width:1500px;margin:25px auto 50px}
+.seccion{background:#fff;border:1px solid #e1e5ea;border-radius:8px;margin-bottom:25px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.seccion h2{margin:0 0 6px;font-size:21px;font-weight:600}
+.descripcion{margin:0 0 18px;color:#687585;font-size:14px}
+.contenedor-tabla{width:100%;overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:900px;background:#fff}
+th,td{border:1px solid #dfe3e8;padding:8px 10px;text-align:center;white-space:nowrap;font-size:13px}
+th{background:#f1f3f5;font-weight:600}
+tr:nth-child(even) td{background:#fafbfc}
+.leyenda{display:flex;justify-content:center;gap:25px;margin:5px auto 15px;flex-wrap:wrap;font-size:13px}
+.item-leyenda{display:flex;align-items:center;gap:7px}
+.cuadro{width:13px;height:13px;border-radius:2px;display:inline-block}
+.bueno{background:#16b67f}.regular{background:#f5a623}.malo{background:#e74c3c}
+.grafica{width:100%}
+.error{display:none;padding:14px;margin-bottom:20px;color:#8a1024;background:#fff0f2;border:1px solid #f2b8c1;border-radius:6px}
+.pie{text-align:center;color:#7a8795;font-size:13px;padding:10px 0 30px}
+</style>
+</head>
+<body>
+
+<header class="encabezado">
+<h1>Panel de Rendimiento Académico</h1>
+<p>Calificaciones, rendimiento por evaluación y distribución de resultados</p>
+</header>
+
+<main class="contenido">
+<div id="error" class="error"></div>
+
+<section class="seccion">
+<h2>Tabla de Calificaciones</h2>
+<p class="descripcion">Información detallada de los alumnos y sus evaluaciones.</p>
+<div class="contenedor-tabla"><div id="tabla"></div></div>
+</section>
+
+<section class="seccion">
+<h2>Promedio General de los Alumnos</h2>
+<p class="descripcion">Promedio general de cada alumno, ordenado de mayor a menor.</p>
+<div class="leyenda">
+<div class="item-leyenda"><span class="cuadro bueno"></span><span>Bueno (8.0 - 10.0)</span></div>
+<div class="item-leyenda"><span class="cuadro regular"></span><span>Regular (6.0 - 7.99)</span></div>
+<div class="item-leyenda"><span class="cuadro malo"></span><span>Malo (&lt; 6.0)</span></div>
+</div>
+<div id="graficaBarras" class="grafica"></div>
+</section>
+
+<section class="seccion">
+<h2>Rendimiento por Evaluación</h2>
+<p class="descripcion">Evolución de las calificaciones de cada alumno a través de las evaluaciones.</p>
+<div id="graficaEvaluaciones" class="grafica"></div>
+</section>
+
+<section class="seccion">
+<h2>Distribución de Calificaciones</h2>
+<p class="descripcion">Consulta la distribución del promedio general o de una evaluación específica mediante el selector.</p>
+<div id="graficaDistribucion" class="grafica"></div>
+</section>
+</main>
+
+<footer class="pie">Panel de Rendimiento Académico</footer>
+
+<script>
+const COLORES={Bueno:"#16b67f",Regular:"#f5a623",Malo:"#e74c3c"};
+
+const camposGenerales=[
+"Nombre Completo","Apellido(s)","Nombre","Promedio","Clasificacion","Color"
+];
+
+function clasificarAlumno(promedio){
+if(promedio>=8)return{clasificacion:"Bueno",color:COLORES.Bueno};
+if(promedio>=6)return{clasificacion:"Regular",color:COLORES.Regular};
+return{clasificacion:"Malo",color:COLORES.Malo};
+}
+
+function escapeHTML(valor){
+return String(valor)
+.replaceAll("&","&amp;").replaceAll("<","&lt;")
+.replaceAll(">","&gt;").replaceAll('"',"&quot;")
+.replaceAll("'","&#039;");
+}
+
+function media(datos){
+return datos.length?datos.reduce((a,b)=>a+b,0)/datos.length:0;
+}
+
+function desviacion(datos){
+if(datos.length<2)return 0;
+const mu=media(datos);
+const suma=datos.reduce((a,b)=>a+Math.pow(b-mu,2),0);
+return Math.sqrt(suma/(datos.length-1));
+}
+
+function crearCurvaNormal(datos){
+const mu=media(datos),sigma=desviacion(datos);
+if(!datos.length||!sigma)return{x:[],y:[]};
+const x=[],y=[];
+for(let i=0;i<200;i++){
+const valorX=(10/199)*i;
+const densidad=(1/(sigma*Math.sqrt(2*Math.PI)))*
+Math.exp(-0.5*Math.pow((valorX-mu)/sigma,2));
+x.push(valorX);
+y.push(densidad*datos.length*0.5);
+}
+return{x,y};
+}
+
+async function cargarDatos(){
+try{
+const response=await fetch("datos.php");
+if(!response.ok)throw new Error("No se pudo obtener datos.php");
+const data=await response.json();
+if(!Array.isArray(data)||!data.length)throw new Error("El JSON no contiene alumnos.");
+
+const encabezados=Object.keys(data[0]);
+let tabla="<table><thead><tr>";
+encabezados.forEach(h=>tabla+=`<th>${escapeHTML(h)}</th>`);
+tabla+="</tr></thead><tbody>";
+data.forEach(alumno=>{
+tabla+="<tr>";
+encabezados.forEach(h=>tabla+=`<td>${escapeHTML(alumno[h]??"")}</td>`);
+tabla+="</tr>";
+});
+tabla+="</tbody></table>";
+document.getElementById("tabla").innerHTML=tabla;
+
+const alumnos=data.map(alumno=>{
+const promedio=Number(alumno["Promedio"]);
+const c=clasificarAlumno(promedio);
+return{
+nombre:alumno["Nombre Completo"],
+promedio,
+clasificacion:c.clasificacion,
+color:c.color,
+datos:alumno
+};
+}).filter(a=>a.nombre&&Number.isFinite(a.promedio));
+
+const categoriasTests=Object.keys(data[0])
+.filter(campo=>!camposGenerales.includes(campo));
+
+if(!categoriasTests.length)throw new Error("No se encontraron columnas de evaluaciones.");
+
+// ---------- GRÁFICA DE BARRAS ----------
+const ordenados=[...alumnos].sort((a,b)=>b.promedio-a.promedio);
+const traceBarras={
+x:ordenados.map(a=>a.promedio),
+y:ordenados.map(a=>a.nombre),
+type:"bar",
+orientation:"h",
+marker:{color:ordenados.map(a=>a.color)},
+text:ordenados.map(a=>a.promedio.toFixed(2)),
+textposition:"outside",
+cliponaxis:false,
+hovertemplate:"<b>%{y}</b><br>Promedio: %{x:.2f}<extra></extra>"
+};
+
+const layoutBarras={
+title:{text:"Promedio General de los Alumnos"},
+xaxis:{title:"Promedio sobre 10",range:[0,10.5],dtick:1,gridcolor:"rgba(200,200,200,.35)"},
+yaxis:{title:"",autorange:"reversed",automargin:true},
+margin:{l:190,r:70,t:60,b:60},
+height:Math.max(500,ordenados.length*30),
+plot_bgcolor:"white",paper_bgcolor:"white",showlegend:false,
+shapes:[
+{type:"line",x0:6,x1:6,y0:0,y1:1,yref:"paper",line:{dash:"dash",width:1}},
+{type:"line",x0:8,x1:8,y0:0,y1:1,yref:"paper",line:{dash:"dash",width:1}}
+]};
+
+Plotly.newPlot("graficaBarras",[traceBarras],layoutBarras,
+{responsive:true,displaylogo:false});
+
+// ---------- GRÁFICA DE LÍNEAS ----------
+const trazas=[];
+const leyendas={Bueno:false,Regular:false,Malo:false};
+
+alumnos.forEach(alumno=>{
+const categoria=alumno.clasificacion;
+const mostrar=!leyendas[categoria];
+leyendas[categoria]=true;
+
+const valores=categoriasTests.map(test=>{
+const v=Number(alumno.datos[test]);
+return Number.isFinite(v)?v:null;
+});
+
+trazas.push({
+x:categoriasTests,y:valores,mode:"lines",
+line:{color:alumno.color,width:2,shape:"spline"},
+opacity:.6,name:categoria,legendgroup:categoria,
+showlegend:mostrar,
+text:categoriasTests.map(()=>
+`<b>${escapeHTML(alumno.nombre)}</b><br>`+
+`Promedio: ${alumno.promedio.toFixed(2)}<br>`+
+`Clasificación: ${alumno.clasificacion}`),
+hovertemplate:"%{text}<br>%{x}: %{y:.2f}<extra></extra>"
+});
+});
+
+const layoutLineas={
+title:{text:"Rendimiento de Alumnos por Evaluación",x:.5,xanchor:"center"},
+xaxis:{type:"category",tickangle:-30,automargin:true},
+yaxis:{title:"Calificación / 10.00",range:[-.5,10.5],dtick:5,gridcolor:"rgba(200,200,200,.2)"},
+plot_bgcolor:"white",paper_bgcolor:"white",hovermode:"closest",
+legend:{x:1.02,xanchor:"left",y:1},
+margin:{l:70,r:150,t:70,b:130},height:650
+};
+
+Plotly.newPlot("graficaEvaluaciones",trazas,layoutLineas,
+{responsive:true,displaylogo:false});
+
+// ---------- GRÁFICA DE DISTRIBUCIÓN ----------
+const opciones=["Promedio",...categoriasTests];
+const trazasDistribucion=[];
+const botones=[];
+
+opciones.forEach((opcion,i)=>{
+const datos=data.map(a=>Number(a[opcion]))
+.filter(v=>Number.isFinite(v)&&v>=0&&v<=10);
+
+const bordes=[];
+for(let v=0;v<=10.5;v+=.5)bordes.push(v);
+
+const frecuencias=[];
+for(let j=0;j<bordes.length-1;j++){
+const inicio=bordes[j],fin=bordes[j+1];
+frecuencias.push(datos.filter(v=>
+j===bordes.length-2?v>=inicio&&v<=10:v>=inicio&&v<fin
+).length);
+}
+
+const colores=frecuencias.map((_,j)=>
+clasificarAlumno(bordes[j]+.25).color
+);
+
+const mu=media(datos);
+const sigma=desviacion(datos);
+
+trazasDistribucion.push({
+x:bordes.slice(0,-1).map(v=>v+.25),
+y:frecuencias,type:"bar",width:.45,
+marker:{color:colores},name:`Alumnos ${opcion}`,visible:i===0,
+hovertemplate:"<b>"+escapeHTML(opcion)+"</b><br>"+
+"Calificación: %{x:.2f}<br>Número de alumnos: %{y}<extra></extra>"
+});
+
+const curva=crearCurvaNormal(datos);
+
+trazasDistribucion.push({
+x:curva.x,y:curva.y,type:"scatter",mode:"lines",
+line:{color:"black",width:3,shape:"spline"},
+name:`Campana ${opcion}`,visible:i===0,
+hovertemplate:"Calificación: %{x:.2f}<br>Distribución normal<extra></extra>"
+});
+
+const visibilidad=Array(opciones.length*2).fill(false);
+visibilidad[2*i]=true;
+visibilidad[2*i+1]=true;
+
+botones.push({
+label:opcion,method:"update",
+args:[
+{visible:visibilidad},
+{title:`${opcion} | Media: ${mu.toFixed(2)} | Desviación: ${sigma.toFixed(2)}`}
+]
+});
+});
+
+const datosPromedio=data.map(a=>Number(a["Promedio"]))
+.filter(v=>Number.isFinite(v)&&v>=0&&v<=10);
+
+const muInicial=media(datosPromedio);
+const sigmaInicial=desviacion(datosPromedio);
+
+const layoutDistribucion={
+title:`Promedio | Media: ${muInicial.toFixed(2)} | Desviación: ${sigmaInicial.toFixed(2)}`,
+xaxis:{title:"Calificación",range:[0,10],dtick:.5,gridcolor:"rgba(200,200,200,.25)"},
+yaxis:{title:"Número de Alumnos",rangemode:"tozero",gridcolor:"rgba(200,200,200,.2)"},
+plot_bgcolor:"white",paper_bgcolor:"white",showlegend:false,height:600,
+margin:{l:70,r:30,t:100,b:70},
+updatemenus:[{
+active:0,buttons:botones,x:0,xanchor:"left",
+y:1.16,yanchor:"top",direction:"down",showactive:true
+}]
+};
+
+Plotly.newPlot("graficaDistribucion",trazasDistribucion,layoutDistribucion,
+{responsive:true,displaylogo:false});
+
+}catch(error){
+console.error(error);
+const elemento=document.getElementById("error");
+elemento.textContent="Error al cargar los datos: "+error.message;
+elemento.style.display="block";
+}
+}
+
+cargarDatos();
+</script>
+</body>
+</html>
